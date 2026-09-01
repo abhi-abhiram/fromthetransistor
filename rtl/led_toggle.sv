@@ -20,7 +20,7 @@ module led_toggle #(
 );
 
 localparam int COUNT_MAX =
-    (CLK_FREQ_HZ / 1000) * HALF_PERIOD_MS;
+    (CLK_FREQ_HZ * HALF_PERIOD_MS)/1000;
 
 localparam int WIDTH =
     $clog2(COUNT_MAX);
