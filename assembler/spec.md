@@ -149,7 +149,7 @@ Operand convention:
 Example:
 
 ```asm
-ADD R0, R1, R2
+add R0, R1, R2
 ```
 
 Conceptually:
@@ -170,8 +170,11 @@ The 12 reserved bits must have a defined decoding rule, preferably requiring zer
 Example:
 
 ```asm
-ADDI R0, R1, #100
+add R0, R1, #100
 ```
+
+The mnemonic does not change for the immediate form; the assembler selects the
+encoding from the operand kinds (see §12).
 
 Conceptually:
 
@@ -179,7 +182,7 @@ Conceptually:
 
 The immediate field is 16 bits wide. Its signedness and valid range must be specified for each instruction that uses it.
 
-**Encoding issue to resolve:** The opcode must unambiguously identify the instruction format. The current opcode assignments do not distinguish register and immediate forms of ADD, SUB, or the logical instructions. A recommended solution is to allocate separate opcodes to register and immediate variants.
+**Encoding issue to resolve:** The opcode must unambiguously identify the instruction format. The current opcode assignments do not distinguish register and immediate forms of ADD, SUB, or the logical instructions. Allocating separate opcodes to the register and immediate variants is now required rather than merely recommended, because the frozen syntax (§12) uses one mnemonic for both forms and the encoder must recover the format from the operands.
 
 #### B-format — branches
 
@@ -274,12 +277,13 @@ Register and immediate forms are intended to be supported.
 
 #### Load/store
 
-| Opcode | Instruction |
-|---|---|
-| `0x40` | LOAD |
-| `0x41` | STORE |
+| Opcode | Mnemonics | Width field `W` |
+|---|---|---|
+| `0x40` | `ldr`, `ldrh`, `ldrb` | `10`, `01`, `00` |
+| `0x41` | `str`, `strh`, `strb` | `10`, `01`, `00` |
 
-The access width is encoded within the instruction.
+The access width is encoded within the instruction; the mnemonic selects it
+(see §12.3).
 
 #### Compare, branches, and shifts
 
@@ -537,7 +541,7 @@ Earlier discussions mentioned only 8-bit and 32-bit accesses. The later Module 5
 
 **Status: DECIDED conceptually**
 
-For LOAD and STORE:
+For `ldr`/`str` and their width variants:
 
 `effective_address = base_register_value + sign_extend(offset14)`
 
@@ -546,11 +550,11 @@ The signed byte displacement range is −8192 through +8191.
 Example syntax:
 
 ```asm
-LOAD  R0, [R1 + 20]
-STORE R0, [R1 - 8]
+ldr  R0, [R1, #20]
+str  R0, [R1, #-8]
 ```
 
-The exact assembly grammar remains provisional.
+The grammar is frozen in §12.
 
 ### 9.4 Alignment
 
@@ -659,31 +663,136 @@ This is a software convention that allows separately written functions to intero
 
 ## 12. Assembly syntax
 
-**Status: PROVISIONAL**
+**Status: DECIDED** (directives: syntax reserved, semantics PENDING)
 
-Examples used in the project discussions include:
+This section is the contract between hand-written assembly and the Module 6
+assembler. It does not settle instruction encodings; where a syntax form needs
+an encoding that §3/§4 has not allocated, that gap is called out.
 
-```asm
-ADD  R0, R1, R2
-ADDS R0, R1, #5
+### 12.1 Surface conventions
 
-CMP  R0, R1
-BEQ  equal
+| Item | Rule |
+|---|---|
+| Mnemonics | Case-insensitive. Canonical form emitted by tools is lowercase. |
+| Register names | Case-insensitive. `R0`–`R15`, with aliases `SP`=R13, `LR`=R14, `PC`=R15. |
+| Labels | Case-sensitive identifiers; referenced bare (no `#`, no `$`). |
+| Immediates | `#` is mandatory: `#5`, `#0xFF`, `#0b1010`, `#-8`. |
+| Memory operands | `[Rn, #off]`, or `[Rn]` meaning offset 0. |
+| Statements | One instruction per line; an optional label may prefix it. |
+| Operand separator | Comma, mandatory between operands. No trailing comma. |
+| Comments | `;` or `//` to end of line. |
+| Whitespace | Spaces and tabs separate tokens and are otherwise insignificant. `\r\n` is a newline. |
+| Line endings | `\n` or `\r\n`. |
 
-LOAD  R0, [R1 + 20]
-STORE R0, [R1 - 8]
+### 12.2 Grammar
+
+```ebnf
+program     ::= { line }
+line        ::= [ label ] [ instruction ] [ comment ] newline
+label       ::= IDENT ":"
+instruction ::= mnemonic [ operand { "," operand } ]
+comment     ::= ( ";" | "//" ) { any char except newline }
+operand     ::= reg | imm | mem | IDENT
+imm         ::= "#" [ "-" ] number
+mem         ::= "[" reg [ "," imm ] "]"
+number      ::= digit { digit } | "0x" hexdigit { hexdigit } | "0b" bindigit { bindigit }
+reg         ::= "r" digit | "sp" | "lr" | "pc"        (* case-insensitive *)
+IDENT       ::= ( letter | "_" ) { letter | digit | "_" }
 ```
 
-General conventions discussed:
+`mnemonic` is the closed set in §12.3 and is matched case-insensitively.
+`reg` is matched case-insensitively as well; `IDENT` keeps its original case
+because labels are case-sensitive.
 
-- Register names are `R0` through `R15`.
-- Immediate operands begin with `#`.
-- Memory operands identify a base register and signed displacement.
-- Labels identify branch destinations.
+Notes:
 
-The lexer and parser still need a formal grammar for punctuation, signed numbers, numeric bases, labels, comments, and case sensitivity.
+- The final line may omit `newline`; end of file terminates it.
+- `mem` reuses `imm`, so offsets require `#`.
+- Register digits are range-checked: `0`–`15` only.
+- A line with only `label:` and no instruction is legal.
+- A line with only a comment, or nothing at all, is legal.
+- Numeric literals are unsigned text; a leading `-` is part of `imm`, not
+  `number`. Octal is not supported.
+- Values are range-checked by the encoder, not the parser, so diagnostics can
+  name the field that overflowed.
+- A label may not reuse a register name or mnemonic, since those tokens are
+  matched before `IDENT` in operand position.
 
-The opcode and operand-format ambiguity must be resolved before the assembler's encoder is finalized.
+### 12.3 Instruction forms
+
+| Class | Form | Example |
+|---|---|---|
+| Arithmetic / logical | `op Rd, Rn, <reg\|imm>` | `add R0, R1, R2` / `adds R0, R1, #5` |
+| Compare | `cmp Rn, <reg\|imm>` | `cmp R0, R1` |
+| Move | `mov Rd, <reg\|imm>` | `mov R0, #0` |
+| Shift | `lsl\|lsr\|asr Rd, Rn, <reg\|imm>` | `lsl R0, R1, #2` |
+| Branch | `b<cond> label` | `beq loop` |
+| Load | `ldrb\|ldrh\|ldr Rd, [Rn, #off]` | `ldr R0, [R1, #20]` |
+| Store | `strb\|strh\|str Rt, [Rn, #off]` | `str R0, [sp, #-4]` |
+
+Mnemonic set:
+
+```text
+add adds sub subs
+and ands orr orrs eor eors bic bics
+cmp mov
+lsl lsr asr
+b beq bne blt bge bgt ble bcc bcs bhi bls
+ldrb ldrh ldr strb strh str
+```
+
+Deliberately absent in v1: writeback (`!`), pre/post-indexed addressing,
+barrel-shifter operand modifiers, register lists, and numeric branch targets.
+
+### 12.4 Where syntax meets encoding
+
+- `add`/`sub`/logical ops accept both `<reg>` and `#imm` under one mnemonic.
+  The assembler therefore needs a distinct opcode (or a format bit) for each
+  form. That allocation remains **PENDING** in §4.2; the syntax does not
+  distinguish them, so source is stable when it is settled.
+- `ldr`/`ldrh`/`ldrb` and `str`/`strh`/`strb` all encode to `0x40`/`0x41`
+  with the `W` field set by the mnemonic.
+- Shift amounts as registers require the shift opcodes to accept an R-format;
+  immediate amounts require I-format. Both are accepted in source.
+
+### 12.5 Directives
+
+**Status: PENDING**
+
+Reserved names, grammar and semantics deferred to the Module 6 output stage
+and the linker:
+
+```text
+.equ   .word   .byte   .align   .org   .global
+```
+
+A leading `.` is therefore reserved for directives and may not start a label.
+
+### 12.6 Canonical form
+
+For the disassembler, test expectations and error output:
+
+- lowercase mnemonics and register names written as `R` + decimal;
+- `#` on every immediate, including `#0` offsets: `ldr R0, [R1, #0]`;
+- exactly one space after a comma, none before;
+- no alignment padding between mnemonic and operands.
+
+Every canonical line must re-assemble to the identical bytes.
+
+### 12.7 Example
+
+```asm
+; sum 1..10, then spill the result
+        mov     r0, #0            // accumulator
+        mov     r1, #1            // counter
+loop:   cmp     r1, #10
+        bgt     done
+        add     r0, r0, r1
+        add     r1, r1, #1
+        b       loop
+done:   str     r0, [sp, #-4]
+        ldrh    r2, [sp, #-4]
+```
 
 ---
 
@@ -693,7 +802,7 @@ The available project notes were reviewed for the ISA design, Module 5 status, a
 
 ### Corrections and clarifications
 
-1. **Register/immediate encoding:** The intended support for both forms is recorded, but the encoding must distinguish them unambiguously. This is a major implementation blocker.
+1. **Register/immediate encoding:** The intended support for both forms is recorded, but the encoding must distinguish them unambiguously. The syntax (§12) deliberately uses one mnemonic for both, so the encoder must select the form; the opcode allocation is still a major implementation blocker.
 2. **Memory widths:** Use the later decision of 8-, 16-, and 32-bit accesses, not the earlier 8-/32-bit-only design.
 3. **Narrow loads:** Zero versus sign extension is still unresolved.
 4. **Opcode assignments:** CMP, branches, shifts, and MOV do not yet have a complete final opcode table.
@@ -705,6 +814,7 @@ The available project notes were reviewed for the ISA design, Module 5 status, a
 
 #### A. Freeze instruction encodings
 
+- [x] Freeze assembly syntax (§12).
 - [ ] Finalize all instruction formats.
 - [ ] Separate or otherwise distinguish register and immediate forms.
 - [ ] Finalize opcode assignments for every supported instruction.
